@@ -111,6 +111,42 @@ const Gemini = (() => {
     return Array.isArray(data.models);
   }
 
+  /* 문서 분석에 쓸 수 없는 모델(임베딩·음성·이미지 생성 등)은 목록에서 제외 */
+  const NOT_FOR_DOCS = /embedding|aqa|imagen|veo|image|tts|live|transcribe|translate/i;
+
+  /**
+   * 이 키로 실제 호출 가능한 모델 목록을 가져온다.
+   * 모델 이름은 수시로 바뀌므로 하드코딩된 목록보다 이쪽이 정확하다.
+   */
+  async function listModels(apiKey) {
+    const models = [];
+    let pageToken = '';
+    for (let page = 0; page < 5; page++) {
+      const url = `${BASE}/models?key=${encodeURIComponent(apiKey)}&pageSize=200`
+                + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+      const data = await request(url, { method: 'GET' }, { retries: 1 });
+      for (const m of data.models || []) {
+        const id = String(m.name || '').replace(/^models\//, '');
+        if (!id.startsWith('gemini-')) continue;
+        if (NOT_FOR_DOCS.test(id)) continue;
+        if (!(m.supportedGenerationMethods || []).includes('generateContent')) continue;
+        models.push({ id, label: m.displayName || id });
+      }
+      pageToken = data.nextPageToken || '';
+      if (!pageToken) break;
+    }
+    // 최신 버전이 위로 오도록 내림차순
+    return models.sort((a, b) => b.id.localeCompare(a.id, 'en', { numeric: true }));
+  }
+
+  /* 모델 계열마다 사고(thinking) 제어 방식이 다르다.
+     스캔 문서 분류는 긴 추론이 필요 없어 최소로 낮춰 할당량을 아낀다. */
+  function thinkingConfigFor(model) {
+    if (model.startsWith('gemini-2.5')) return { thinkingBudget: 0 };
+    if (/^gemini-3/.test(model)) return { thinkingLevel: 'low' };
+    return null;
+  }
+
   /**
    * 문서 한 건을 분석한다.
    * @returns {{date,docType,issuer,title,category,summary,confidence}}
@@ -135,20 +171,29 @@ const Gemini = (() => {
       ].map(category => ({ category, threshold: 'BLOCK_ONLY_HIGH' })),
     };
 
-    // 2.5 계열은 사고 예산을 최소화해 무료 할당량을 아낀다.
-    if (model.startsWith('gemini-2.5')) {
-      body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    }
+    const thinking = thinkingConfigFor(model);
+    if (thinking) body.generationConfig.thinkingConfig = thinking;
 
-    const data = await request(
-      `${BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-      { onRetry },
-    );
+    const url = `${BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const send = () => request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, { onRetry });
+
+    let data;
+    try {
+      data = await send();
+    } catch (e) {
+      // 새 모델이 나오면서 thinking 설정 이름이 바뀔 수 있다.
+      // 그 항목 때문에 거부당한 경우에만 빼고 한 번 더 시도한다.
+      if (thinking && /thinking|thought/i.test(e.message)) {
+        delete body.generationConfig.thinkingConfig;
+        data = await send();
+      } else {
+        throw e;
+      }
+    }
 
     const cand = data.candidates?.[0];
     if (!cand) {
@@ -171,5 +216,5 @@ const Gemini = (() => {
     }
   }
 
-  return { RateLimiter, analyzeDocument, testKey, MAX_INLINE_BYTES };
+  return { RateLimiter, analyzeDocument, testKey, listModels, MAX_INLINE_BYTES };
 })();

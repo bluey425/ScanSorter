@@ -6,6 +6,7 @@
     apiKey: $('apiKey'), btnToggleKey: $('btnToggleKey'), btnTestKey: $('btnTestKey'),
     keyStatus: $('keyStatus'),
     model: $('model'), rpm: $('rpm'), lang: $('lang'),
+    btnLoadModels: $('btnLoadModels'), modelStatus: $('modelStatus'),
     template: $('template'), categories: $('categories'),
     useFolders: $('useFolders'), skipProcessed: $('skipProcessed'),
     autoWatch: $('autoWatch'), autoApply: $('autoApply'),
@@ -48,6 +49,15 @@
 
   function settingsToForm() {
     for (const [key, prop] of Object.entries(FIELDS)) el[key][prop] = state.settings[key];
+
+    // 저장된 모델이 목록에 없으면(새 이름으로 바뀌었거나 직접 넣은 경우)
+    // 선택이 통째로 풀리므로 항목을 만들어 붙인다.
+    if (state.settings.model && el.model.value !== state.settings.model) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = state.settings.model;
+      el.model.prepend(opt);
+      el.model.value = state.settings.model;
+    }
   }
   function formToSettings() {
     for (const [key, prop] of Object.entries(FIELDS)) state.settings[key] = el[key][prop];
@@ -409,6 +419,40 @@
     } catch (e) {
       el.keyStatus.textContent = '✖ ' + e.message;
       log('API 키 확인 실패: ' + e.message, 'error');
+    }
+  });
+
+  /* 이 키로 실제 쓸 수 있는 모델로 목록을 갈아끼운다.
+     모델 이름은 계속 바뀌므로 하드코딩 목록보다 이쪽이 정확하다. */
+  el.btnLoadModels.addEventListener('click', async () => {
+    formToSettings();
+    if (!state.settings.apiKey) { el.modelStatus.textContent = '먼저 API 키를 입력하세요.'; return; }
+
+    el.btnLoadModels.disabled = true;
+    el.modelStatus.textContent = '불러오는 중…';
+    try {
+      const models = await Gemini.listModels(state.settings.apiKey);
+      if (!models.length) throw new Error('사용 가능한 모델이 없습니다.');
+
+      const current = state.settings.model;
+      el.model.innerHTML = models
+        .map(m => `<option value="${escapeAttr(m.id)}">${escapeHtml(m.id)}</option>`).join('');
+
+      // 쓰던 모델이 목록에 없으면 첫 번째로 대체하고 알린다.
+      if (models.some(m => m.id === current)) {
+        el.model.value = current;
+        el.modelStatus.textContent = `✔ ${models.length}개 확인 — 현재 ${current}`;
+      } else {
+        el.model.value = models[0].id;
+        formToSettings();
+        el.modelStatus.textContent = `✔ ${models.length}개 확인 — ${current}는 쓸 수 없어 ${models[0].id}로 변경했습니다.`;
+      }
+      log(`사용 가능한 모델 ${models.length}개 확인`, 'ok');
+    } catch (e) {
+      el.modelStatus.textContent = '✖ ' + e.message;
+      log('모델 목록 불러오기 실패: ' + e.message, 'error');
+    } finally {
+      el.btnLoadModels.disabled = false;
     }
   });
 
