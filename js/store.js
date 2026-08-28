@@ -2,6 +2,7 @@
 const Store = (() => {
   const SETTINGS_KEY = 'scansorter.settings';
   const PROCESSED_KEY = 'scansorter.processed';
+  const HASHES_KEY = 'scansorter.hashes';
   const DB_NAME = 'scansorter';
   const DB_STORE = 'handles';
 
@@ -14,6 +15,7 @@ const Store = (() => {
     categories: '',
     useFolders: true,
     skipProcessed: true,
+    dupCheck: true,
     autoWatch: false,
     autoApply: false,
   };
@@ -39,6 +41,20 @@ const Store = (() => {
     // 무한 증가 방지: 최근 3000건만 유지
     const arr = [...set].slice(-3000);
     localStorage.setItem(PROCESSED_KEY, JSON.stringify(arr));
+  }
+
+  /* 정리를 마친 파일의 내용 지문 → 최종 위치.
+     이름이 달라도 내용이 같으면 중복으로 잡아내기 위해 남긴다. */
+  function loadHashes() {
+    try { return JSON.parse(localStorage.getItem(HASHES_KEY) || '{}'); }
+    catch { return {}; }
+  }
+  function saveHashes(map) {
+    const entries = Object.entries(map);
+    const trimmed = entries.length > 5000
+      ? Object.fromEntries(entries.slice(-5000))   // 무한 증가 방지
+      : map;
+    localStorage.setItem(HASHES_KEY, JSON.stringify(trimmed));
   }
 
   /* 디렉터리 핸들은 IndexedDB에만 저장 가능 (구조화 복제 대상) */
@@ -71,7 +87,7 @@ const Store = (() => {
 
   return {
     defaults, loadSettings, saveSettings,
-    fileKey, loadProcessed, saveProcessed,
+    fileKey, loadProcessed, saveProcessed, loadHashes, saveHashes,
     saveDirHandle: h => idbSet('scanDir', h),
     loadDirHandle: () => idbGet('scanDir').catch(() => null),
   };

@@ -131,6 +131,12 @@ const FS = (() => {
     return { dir: folderName || '', name: finalName, moved: true, handle: newHandle };
   }
 
+  /* 파일 내용의 SHA-256 지문 — 이름이 달라도 같은 문서인지 판별하는 데 쓴다 */
+  async function sha256(arrayBuffer) {
+    const digest = await crypto.subtle.digest('SHA-256', arrayBuffer);
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
   /* 대용량에서도 스택이 넘치지 않는 base64 변환 */
   function toBase64(arrayBuffer) {
     const bytes = new Uint8Array(arrayBuffer);
@@ -144,6 +150,6 @@ const FS = (() => {
 
   return {
     supported, pickDirectory, ensurePermission, listFiles, listSubfolders,
-    sanitize, uniqueName, renameAndMove, toBase64, mimeOf, isSupportedFile,
+    sanitize, uniqueName, renameAndMove, toBase64, sha256, mimeOf, isSupportedFile,
   };
 })();

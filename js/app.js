@@ -8,7 +8,7 @@
     model: $('model'), rpm: $('rpm'), lang: $('lang'),
     btnLoadModels: $('btnLoadModels'), modelStatus: $('modelStatus'),
     template: $('template'), categories: $('categories'),
-    useFolders: $('useFolders'), skipProcessed: $('skipProcessed'),
+    useFolders: $('useFolders'), skipProcessed: $('skipProcessed'), dupCheck: $('dupCheck'),
     autoWatch: $('autoWatch'), autoApply: $('autoApply'),
     btnPick: $('btnPick'), btnRescan: $('btnRescan'), folderName: $('folderName'),
     btnAnalyze: $('btnAnalyze'), btnStop: $('btnStop'), btnApply: $('btnApply'),
@@ -21,6 +21,7 @@
   const state = {
     settings: Store.loadSettings(),
     processed: Store.loadProcessed(),
+    hashes: Store.loadHashes(),
     dirHandle: null,
     items: [],                       // { id, entry, status, result, newName, category, error, checked }
     running: false,
@@ -43,7 +44,7 @@
   const FIELDS = {
     apiKey: 'value', model: 'value', rpm: 'value', lang: 'value',
     template: 'value', categories: 'value',
-    useFolders: 'checked', skipProcessed: 'checked',
+    useFolders: 'checked', skipProcessed: 'checked', dupCheck: 'checked',
     autoWatch: 'checked', autoApply: 'checked',
   };
 
@@ -130,6 +131,7 @@
     working: ['working', '분석 중'],
     ready:   ['ready', '확인 대기'],
     done:    ['done', '완료'],
+    dup:     ['skip', '중복'],
     skip:    ['skip', '건너뜀'],
     error:   ['error', '오류'],
   };
@@ -237,7 +239,55 @@
     if (added || skipped) {
       log(`새 파일 ${added}건 발견${skipped ? ` (이미 처리한 ${skipped}건 제외)` : ''}`);
     }
+
+    if (added && state.settings.dupCheck) {
+      const dups = await markDuplicates();
+      if (dups) log(`내용이 같은 중복 파일 ${dups}건 — 분석하지 않습니다`);
+      return added - dups;
+    }
     return added;
+  }
+
+  /**
+   * 내용 지문(SHA-256)으로 중복을 잡아낸다. 이름이 달라도 바이트가 같으면 중복이다.
+   * AI에 보내기 전에 걸러내야 할당량이 낭비되지 않는다.
+   */
+  async function markDuplicates() {
+    const fresh = state.items.filter(i => i.status === 'pending' && !i.hash);
+    if (!fresh.length) return 0;
+    if (fresh.length > 5) log(`중복 검사 중… ${fresh.length}건`);
+
+    // 이번 목록에서 이미 자리를 잡은 지문들 (같은 배치 안의 중복 판별용)
+    const seen = new Map();
+    for (const i of state.items) {
+      if (i.hash && i.status !== 'dup') seen.set(i.hash, i.entry.name);
+    }
+
+    let dups = 0;
+    for (const item of fresh) {
+      try {
+        const buf = await item.entry.handle.getFile().then(f => f.arrayBuffer());
+        item.hash = await FS.sha256(buf);
+      } catch (e) {
+        log(`${item.entry.name}: 중복 검사 실패 — ${e.message}`, 'error');
+        continue;
+      }
+
+      // 같은 배치 안의 원본이 먼저, 없으면 예전에 정리해 둔 파일과 대조
+      const origin = seen.get(item.hash) || state.hashes[item.hash];
+      if (origin) {
+        item.status = 'dup';
+        item.checked = false;
+        item.error = `내용이 같은 파일이 이미 있습니다 → ${origin}`;
+        dups++;
+        log(`중복: ${item.entry.name} = ${origin}`);
+      } else {
+        seen.set(item.hash, item.entry.name);
+      }
+    }
+
+    render();
+    return dups;
   }
 
   el.btnPick.addEventListener('click', async () => {
@@ -356,6 +406,8 @@
         // 다음 스캔에서 새 파일로 다시 잡히지 않는다.
         state.processed.add(Store.fileKey(item.entry.file));
         try { state.processed.add(Store.fileKey(await res.handle.getFile())); } catch (_) {}
+        // 지문을 최종 위치와 함께 남겨야 나중에 같은 문서가 또 들어와도 잡힌다.
+        if (item.hash) state.hashes[item.hash] = (res.dir ? res.dir + '/' : '') + res.name;
         ok++;
         log(`저장: ${res.dir ? res.dir + '/' : ''}${res.name}`, 'ok');
       } catch (e) {
@@ -367,6 +419,7 @@
     }
 
     Store.saveProcessed(state.processed);
+    Store.saveHashes(state.hashes);
     state.running = false;
 
     try { folderCategories = await FS.listSubfolders(state.dirHandle); } catch (_) {}
