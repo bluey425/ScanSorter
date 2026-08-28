@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScanSorter — 스캔 문서 자동 정리</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">📄</span>
+    <div>
+      <h1>ScanSorter</h1>
+      <p>스캔한 PDF를 AI가 읽고, 이름 짓고, 분류 폴더로 정리합니다</p>
+    </div>
+  </div>
+  <button id="btnSettings" class="ghost">⚙ 설정</button>
+</header>
+
+<div id="unsupported" class="banner error" hidden>
+  <strong>이 브라우저는 지원하지 않습니다.</strong>
+  로컬 폴더에 직접 접근하려면 <b>Chrome</b> 또는 <b>Edge</b> 데스크톱 브라우저가 필요합니다.
+  (Firefox·Safari·모바일 브라우저는 File System Access API를 지원하지 않습니다.)
+</div>
+
+<main>
+
+  <!-- ── 설정 패널 ────────────────────────────────── -->
+  <section id="settings" class="card">
+    <h2>1. 설정</h2>
+
+    <div class="field">
+      <label for="apiKey">Gemini API 키</label>
+      <div class="row">
+        <input type="password" id="apiKey" placeholder="AIza..." autocomplete="off" spellcheck="false">
+        <button id="btnToggleKey" class="ghost small">보기</button>
+        <button id="btnTestKey" class="ghost small">연결 확인</button>
+      </div>
+      <p class="hint">
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>에서 무료로 발급받으세요.
+        키는 이 브라우저에만 저장되며, 파일과 함께 Google 서버로만 전송됩니다.
+      </p>
+      <p id="keyStatus" class="hint"></p>
+    </div>
+
+    <div class="grid3">
+      <div class="field">
+        <label for="model">모델</label>
+        <select id="model">
+          <option value="gemini-2.5-flash">gemini-2.5-flash (정확도 우선)</option>
+          <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (속도·할당량 우선)</option>
+          <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="rpm">분당 요청 수 (RPM)</label>
+        <input type="number" id="rpm" min="1" max="60" step="1">
+        <p class="hint">무료 플랜 한도에 맞춰 자동으로 간격을 둡니다.</p>
+      </div>
+      <div class="field">
+        <label for="lang">문서 언어 힌트</label>
+        <select id="lang">
+          <option value="ko">한국어</option>
+          <option value="en">English</option>
+          <option value="auto">자동 감지</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="template">파일명 규칙</label>
+      <input type="text" id="template" spellcheck="false">
+      <p class="hint">
+        사용 가능: <code>{date}</code> <code>{type}</code> <code>{issuer}</code> <code>{title}</code>
+        <code>{category}</code> <code>{orig}</code> — 값이 비면 자동으로 생략됩니다.
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="categories">분류 목록 <span class="muted">(줄바꿈으로 구분 · 비워두면 AI가 알아서 만듭니다)</span></label>
+      <textarea id="categories" rows="4" spellcheck="false"
+        placeholder="세금계산서&#10;계약서&#10;의료&#10;금융&#10;공문서"></textarea>
+      <p class="hint">여기 적힌 분류를 우선 사용합니다. 선택한 폴더의 기존 하위 폴더 이름도 자동으로 후보에 포함됩니다.</p>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="useFolders" checked> 분류별 하위 폴더 만들어서 이동</label>
+      <label><input type="checkbox" id="skipProcessed" checked> 이미 처리한 파일 건너뛰기</label>
+      <label><input type="checkbox" id="autoWatch"> 새 스캔 파일 자동 감시 (30초마다)</label>
+      <label><input type="checkbox" id="autoApply"> 감시 중 자동으로 이름 변경·이동까지 실행</label>
+    </div>
+  </section>
+
+  <!-- ── 폴더 선택 ────────────────────────────────── -->
+  <section class="card">
+    <h2>2. 스캔 폴더 선택</h2>
+    <div class="row">
+      <button id="btnPick" class="primary">📁 폴더 선택</button>
+      <button id="btnRescan" class="ghost" disabled>🔄 다시 읽기</button>
+      <span id="folderName" class="folder muted">선택된 폴더 없음</span>
+    </div>
+    <p class="hint">선택한 폴더 안의 PDF·이미지 파일만 읽습니다. 하위 폴더는 건드리지 않습니다.</p>
+  </section>
+
+  <!-- ── 작업 ────────────────────────────────────── -->
+  <section class="card">
+    <div class="cardhead">
+      <h2>3. 분석 &amp; 적용</h2>
+      <div class="row">
+        <button id="btnAnalyze" class="primary" disabled>✨ AI 분석 시작</button>
+        <button id="btnStop" class="ghost" disabled>■ 중지</button>
+        <button id="btnApply" class="accent" disabled>💾 선택 항목 적용</button>
+      </div>
+    </div>
+
+    <div id="progressWrap" hidden>
+      <div class="progress"><div id="progressBar"></div></div>
+      <p id="progressText" class="hint"></p>
+    </div>
+
+    <div class="tablewrap">
+      <table id="table">
+        <thead>
+          <tr>
+            <th class="c-check"><input type="checkbox" id="checkAll"></th>
+            <th class="c-status">상태</th>
+            <th>원본 파일명</th>
+            <th>분류</th>
+            <th>새 파일명</th>
+            <th>요약</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr class="empty"><td colspan="6">폴더를 선택하면 파일 목록이 여기에 표시됩니다.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead">
+      <h2>기록</h2>
+      <button id="btnClearLog" class="ghost small">지우기</button>
+    </div>
+    <pre id="log" class="log"></pre>
+  </section>
+
+</main>
+
+<datalist id="categoryList"></datalist>
+
+<footer>
+  파일은 브라우저에서 Google Gemini API로 직접 전송되며, 별도 서버에 저장되지 않습니다.
+</footer>
+
+<script src="js/store.js"></script>
+<script src="js/fs.js"></script>
+<script src="js/gemini.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
